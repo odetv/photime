@@ -1,3 +1,4 @@
+/* eslint-disable @next/next/no-img-element */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /* eslint-disable react-hooks/exhaustive-deps */
 "use client";
@@ -66,6 +67,29 @@ function getFontSizes(base: number) {
       return Math.floor(addrFont * 0.2);
     },
   };
+}
+function getAvgBrightness(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number
+) {
+  try {
+    const imgData = ctx.getImageData(x, y, w, h);
+    let total = 0;
+    const step = 4 * 10; // sampling tiap 10 pixel biar cepat
+    for (let i = 0; i < imgData.data.length; i += step) {
+      const r = imgData.data[i];
+      const g = imgData.data[i + 1];
+      const b = imgData.data[i + 2];
+      total += 0.299 * r + 0.587 * g + 0.114 * b;
+    }
+    const count = imgData.data.length / step;
+    return total / count;
+  } catch {
+    return 255; // fallback terang
+  }
 }
 
 // ===== Component =====
@@ -305,7 +329,6 @@ export default function TimestampWatermarkPage() {
     const { curTime, curDate, curDay, curAddress, curPosition, logoImg } = opts;
 
     ctx.textBaseline = "top";
-    ctx.fillStyle = "#fff";
 
     const base = Math.min(cw, ch);
     const {
@@ -350,6 +373,12 @@ export default function TimestampWatermarkPage() {
       y = ch - padOuter - blockH;
     }
 
+    // Hitung brightness background area watermark
+    const avgBrightness = getAvgBrightness(ctx, x, y, blockW, blockH);
+    const textColor = avgBrightness < 128 ? "#fff" : "#000";
+
+    ctx.fillStyle = textColor;
+
     // section 1: logo
     if (logoImg) {
       ctx.save();
@@ -386,7 +415,7 @@ export default function TimestampWatermarkPage() {
     ctx.fillStyle = "#F5B700";
     ctx.fillRect(barX, y, barW, topRowH);
 
-    ctx.fillStyle = "#fff";
+    ctx.fillStyle = textColor;
     ctx.font = `600 ${metaFont}px sans-serif`;
     ctx.fillText(curDate, barX + barW + gap, y);
     ctx.fillText(curDay, barX + barW + gap, y + metaFont + 4);
@@ -517,6 +546,10 @@ export default function TimestampWatermarkPage() {
       );
       ctx.restore();
     }
+    // Hitung brightness background area watermark
+    const avgBrightness = getAvgBrightness(ctx, x, y, blockW, blockH);
+    const textColor = avgBrightness < 128 ? "#fff" : "#000";
+
     // setelah gambar logo
     y += logoSize;
 
@@ -525,7 +558,8 @@ export default function TimestampWatermarkPage() {
     y += logoBottomPad;
 
     // ===== Section 2: jam + tanggal/hari =====
-    ctx.fillStyle = "#fff";
+    ctx.fillStyle = textColor;
+
     ctx.textBaseline = "top";
 
     ctx.font = `800 ${timeFont}px sans-serif`;
@@ -534,7 +568,9 @@ export default function TimestampWatermarkPage() {
     ctx.fillStyle = "#F5B700";
     ctx.fillRect(barX, y, barW, topRowH);
 
-    ctx.fillStyle = "#fff";
+    ctx.fillStyle = textColor;
+
+    // ctx.fillStyle = "#fff";
     ctx.font = `600 ${metaFont}px sans-serif`;
     ctx.fillText(curDate, barX + barW + gap, y);
     ctx.fillText(curDay, barX + barW + gap, y + metaFont + 4);
@@ -543,7 +579,8 @@ export default function TimestampWatermarkPage() {
 
     // ===== Section 3: alamat =====
     ctx.font = `400 ${addrFont}px sans-serif`;
-    ctx.fillStyle = "#fff";
+    ctx.fillStyle = textColor;
+
     addrLines.forEach((line, i) => {
       ctx.fillText(line, x, y + i * (addrFont + lineGap));
     });
@@ -681,15 +718,15 @@ export default function TimestampWatermarkPage() {
               playsInline
               muted
             />
-            {/* <img ref={imgRef} className="hidden" alt="source" /> */}
-            <Image
+            <img ref={imgRef} className="hidden" alt="source" />
+            {/* <Image
               ref={imgRef}
               src={imgRef.current?.src || defaultImage.src}
               alt="source"
               width={1}
               height={1}
               className="hidden"
-            />
+            /> */}
 
             <canvas
               ref={canvasRef}
