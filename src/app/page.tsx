@@ -1,103 +1,910 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+/* eslint-disable react-hooks/exhaustive-deps */
+"use client";
+import React, { useEffect, useRef, useState } from "react";
+import defaultLogo from "../../public/default_logo.png";
+import defaultImage from "../../public/default_image.png";
 import Image from "next/image";
 
-export default function Home() {
-  return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+type Corner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
+type SourceMode = "camera" | "gallery";
+type Facing = "user" | "environment";
+type OSMReverseResp = { display_name?: string };
+type OSMSearchItem = { display_name: string };
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+const DEFAULT_LOGO = defaultLogo;
+const DEFAULT_ADDRESS =
+  "Yayasan Widya Dharma, Sukasada, Kabupaten Buleleng, Bali, 81161";
+
+// ===== Helpers =====
+function coverRect(srcW: number, srcH: number, dstW: number, dstH: number) {
+  const s = Math.max(dstW / srcW, dstH / srcH);
+  const dw = Math.floor(srcW * s);
+  const dh = Math.floor(srcH * s);
+  const dx = Math.floor((dstW - dw) / 2);
+  const dy = Math.floor((dstH - dh) / 2);
+  return { dw, dh, dx, dy };
+}
+function wrapLines(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number
+): string[] {
+  const words = text.split(/\s+/);
+  const lines: string[] = [];
+  let cur = "";
+  for (const w of words) {
+    const t = cur ? cur + " " + w : w;
+    if (ctx.measureText(t).width <= maxWidth) cur = t;
+    else {
+      if (cur) lines.push(cur);
+      cur = w;
+    }
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+function useLatest<T>(v: T) {
+  const r = useRef(v);
+  useEffect(() => {
+    r.current = v;
+  }, [v]);
+  return r;
+}
+function getFontSizes(base: number) {
+  const padOuter = Math.max(base * 0.05, 40);
+  const gap = Math.max(base * 0.012, 10);
+  return {
+    padOuter,
+    gap,
+    logoSize: Math.max(base * 0.15, 85),
+    timeFont: Math.max(base * 0.1, 50),
+    metaFont: Math.max(base * 0.04, 16),
+    addrFont: Math.max(base * 0.03, 12), // alamat lebih kecil
+    barW: Math.max(base * 0.01, 6),
+    addrLineGap(addrFont: number) {
+      return Math.floor(addrFont * 0.2);
+    },
+  };
+}
+
+// ===== Component =====
+export default function TimestampWatermarkPage() {
+  const [facing, setFacing] = useState<Facing>("user");
+  const [mode, setMode] = useState<SourceMode>("camera");
+  const [isCamActive, setIsCamActive] = useState(false);
+  const [position, setPosition] = useState<Corner>("bottom-left");
+  const [timeText, setTimeText] = useState("");
+  const [dateText, setDateText] = useState("");
+  const [dayText, setDayText] = useState("");
+  const [address, setAddress] = useState(DEFAULT_ADDRESS);
+  const [logoFile, setLogoFile] = useState<File | null>(null);
+  const [logoUrl, setLogoUrl] = useState<string | null>(DEFAULT_LOGO.src);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<OSMSearchItem[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Refs
+  const previewBoxRef = useRef<HTMLDivElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const imgRef = useRef<HTMLImageElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const logoImgRef = useRef<HTMLImageElement | null>(null);
+  // latest refs
+  const timeRef = useLatest(timeText);
+  const dateRef = useLatest(dateText);
+  const dayRef = useLatest(dayText);
+  const addressRef = useLatest(address);
+  const positionRef = useLatest(position);
+  const getDPR = () => Math.max(1, window.devicePixelRatio || 1);
+
+  // init
+  useEffect(() => {
+    const now = new Date();
+    setTimeText(
+      now.toLocaleTimeString("id-ID", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      })
+    );
+    // format contoh: 26/09/2025
+    setDateText(
+      now
+        .toLocaleDateString("id-ID", {
+          day: "2-digit",
+          month: "2-digit",
+          year: "numeric",
+        })
+        .replace(/\./g, "/")
+    );
+    setDayText(now.toLocaleDateString("id-ID", { weekday: "long" }));
+    startCamera();
+    return () => stopCamera();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    if (mode === "camera") {
+      stopCamera();
+      void startCamera();
+    }
+  }, [facing]); // eslint-disable-line
+  useEffect(() => {
+    if (!logoFile) return;
+    const url = URL.createObjectURL(logoFile);
+    setLogoUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [logoFile]);
+  useEffect(() => {
+    if (!logoUrl) {
+      logoImgRef.current = null;
+      return;
+    }
+    const img = new window.Image();
+    img.onload = () => (logoImgRef.current = img);
+    img.onerror = () => (logoImgRef.current = null);
+    img.src = logoUrl;
+  }, [logoUrl]);
+
+  useEffect(() => {
+    const el = previewBoxRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      for (const e of entries)
+        resizeCanvas(e.contentRect.width, e.contentRect.height);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  useEffect(() => {
+    startRAFLoop();
+    return stopRAFLoop;
+  }, [mode]);
+
+  async function startCamera() {
+    try {
+      setError(null);
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: facing },
+        audio: false,
+      });
+      const v = videoRef.current!;
+      v.muted = true;
+      v.playsInline = true;
+      v.setAttribute("playsinline", "true");
+      v.setAttribute("autoplay", "true");
+      v.srcObject = stream;
+      streamRef.current = stream;
+      setIsCamActive(true);
+      setMode("camera");
+      try {
+        await v.play();
+      } catch {}
+    } catch (e: any) {
+      setError("Tidak bisa mengakses kamera: " + (e?.message ?? String(e)));
+      setIsCamActive(false);
+    }
+  }
+  function stopCamera() {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+    setIsCamActive(false);
+  }
+  function switchToGallery() {
+    setMode("gallery");
+    stopCamera();
+  }
+  function switchToCamera() {
+    setMode("camera");
+    startCamera();
+  }
+  function onPickImage(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const url = URL.createObjectURL(f);
+    const img = imgRef.current!;
+    img.onload = () => {};
+    img.src = url;
+    setMode("gallery");
+    stopCamera();
+  }
+
+  // OSM
+  async function useMyLocation() {
+    try {
+      setError(null);
+      setSearching(true);
+      const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 10000,
+        });
+      });
+      const { latitude, longitude } = pos.coords;
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}`,
+        { headers: { "Accept-Language": "id-ID" } }
+      );
+      const data = (await res.json()) as OSMReverseResp;
+      setAddress(
+        data?.display_name || `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`
+      );
+    } catch (e: any) {
+      setError("Gagal mendapatkan lokasi: " + (e?.message ?? String(e)));
+    } finally {
+      setSearching(false);
+    }
+  }
+  async function searchAddress() {
+    if (!searchQuery.trim()) return;
+    try {
+      setSearching(true);
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
+          searchQuery
+        )}&addressdetails=1&limit=5`,
+        { headers: { "Accept-Language": "id-ID" } }
+      );
+      const data = (await res.json()) as OSMSearchItem[];
+      setSearchResults(Array.isArray(data) ? data : []);
+    } catch (e: any) {
+      setError("Gagal mencari alamat: " + (e?.message ?? String(e)));
+    } finally {
+      setSearching(false);
+    }
+  }
+  function applyResult(name: string) {
+    setAddress(name);
+    setSearchResults([]);
+  }
+
+  // canvas
+  function resizeCanvas(cssW: number, cssH: number) {
+    const c = canvasRef.current!;
+    c.style.width = `${cssW}px`;
+    c.style.height = `${cssH}px`;
+    const dpr = getDPR();
+    const pxW = Math.max(2, Math.floor(cssW * dpr));
+    const pxH = Math.max(2, Math.floor(cssH * dpr));
+    if (c.width !== pxW || c.height !== pxH) {
+      c.width = pxW;
+      c.height = pxH;
+    }
+  }
+  function startRAFLoop() {
+    stopRAFLoop();
+    const loop = () => {
+      draw();
+      rafRef.current = requestAnimationFrame(loop);
+    };
+    rafRef.current = requestAnimationFrame(loop);
+  }
+  function stopRAFLoop() {
+    if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+    rafRef.current = null;
+  }
+
+  function renderWatermark(
+    ctx: CanvasRenderingContext2D,
+    cw: number,
+    ch: number,
+    opts: {
+      curTime: string;
+      curDate: string;
+      curDay: string;
+      curAddress: string;
+      curPosition: Corner;
+      logoImg: HTMLImageElement | null;
+    }
+  ) {
+    const { curTime, curDate, curDay, curAddress, curPosition, logoImg } = opts;
+
+    ctx.textBaseline = "top";
+    ctx.fillStyle = "#fff";
+
+    const base = Math.min(cw, ch);
+    const {
+      padOuter,
+      gap,
+      logoSize,
+      timeFont,
+      metaFont,
+      addrFont,
+      barW,
+      addrLineGap,
+    } = getFontSizes(base);
+    const lineGap = addrLineGap(addrFont);
+
+    // hitung lebar
+    ctx.font = `800 ${timeFont}px sans-serif`;
+    const timeW = ctx.measureText(curTime).width;
+
+    ctx.font = `600 ${metaFont}px sans-serif`;
+    const rightColW = Math.max(
+      ctx.measureText(curDate).width,
+      ctx.measureText(curDay).width
+    );
+
+    const topRowW = timeW + gap + barW + gap + rightColW;
+    const topRowH = timeFont;
+
+    ctx.font = `400 ${addrFont}px sans-serif`;
+    const addrLines = wrapLines(ctx, curAddress, Math.max(topRowW, logoSize));
+    const addrH =
+      addrLines.length * addrFont + (addrLines.length - 1) * lineGap;
+
+    const blockW = Math.max(logoSize, topRowW);
+    const blockH = logoSize + gap + topRowH + gap + addrH;
+
+    let x = padOuter,
+      y = padOuter;
+    if (curPosition === "top-right") x = cw - padOuter - blockW;
+    else if (curPosition === "bottom-left") y = ch - padOuter - blockH;
+    else if (curPosition === "bottom-right") {
+      x = cw - padOuter - blockW;
+      y = ch - padOuter - blockH;
+    }
+
+    // section 1: logo
+    if (logoImg) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(x + logoSize / 2, y + logoSize / 2, logoSize / 2, 0, Math.PI * 2);
+      ctx.clip();
+      const s = Math.min(
+        logoSize / logoImg.naturalWidth,
+        logoSize / logoImg.naturalHeight
+      );
+      const dW = Math.floor(logoImg.naturalWidth * s);
+      const dH = Math.floor(logoImg.naturalHeight * s);
+      ctx.drawImage(
+        logoImg,
+        x + (logoSize - dW) / 2,
+        y + (logoSize - dH) / 2,
+        dW,
+        dH
+      );
+      ctx.restore();
+    }
+    // setelah gambar logo
+    y += logoSize;
+
+    // padding tambahan di bawah logo
+    const logoBottomPad = gap * 2; // misal 2x gap standar
+    y += logoBottomPad;
+
+    // section 2: jam + garis + tanggal/hari
+    ctx.font = `800 ${timeFont}px sans-serif`;
+    ctx.fillText(curTime, x, y);
+
+    const barX = x + timeW + gap;
+    ctx.fillStyle = "#F5B700";
+    ctx.fillRect(barX, y, barW, topRowH);
+
+    ctx.fillStyle = "#fff";
+    ctx.font = `600 ${metaFont}px sans-serif`;
+    ctx.fillText(curDate, barX + barW + gap, y);
+    ctx.fillText(curDay, barX + barW + gap, y + metaFont + 4);
+
+    y += topRowH + gap;
+
+    // section 3: alamat
+    ctx.font = `400 ${addrFont}px sans-serif`;
+    addrLines.forEach((line, i) => {
+      ctx.fillText(line, x, y + i * (addrFont + lineGap));
+    });
+  }
+
+  function draw() {
+    const c = canvasRef.current;
+    if (!c) return;
+    const ctx = c.getContext("2d");
+    if (!ctx) return;
+    const cw = c.width,
+      ch = c.height;
+    ctx.clearRect(0, 0, cw, ch);
+
+    // ===== Background kamera/galeri =====
+    let srcEl: HTMLVideoElement | HTMLImageElement | null = null;
+    let sW = 0,
+      sH = 0;
+    if (mode === "camera" && videoRef.current) {
+      const v = videoRef.current;
+      if (v.readyState >= 2 && v.videoWidth && v.videoHeight) {
+        srcEl = v;
+        sW = v.videoWidth;
+        sH = v.videoHeight;
+      }
+    } else if (mode === "gallery" && imgRef.current) {
+      const im = imgRef.current;
+      if (im.complete && im.naturalWidth && im.naturalHeight) {
+        srcEl = im;
+        sW = im.naturalWidth;
+        sH = im.naturalHeight;
+      }
+    }
+    if (srcEl && sW && sH) {
+      const { dw, dh, dx, dy } = coverRect(sW, sH, cw, ch);
+      if (mode === "camera" && facing === "user") {
+        ctx.save();
+        ctx.translate(cw, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(srcEl, dx, dy, dw, dh);
+        ctx.restore();
+      } else {
+        ctx.drawImage(srcEl, dx, dy, dw, dh);
+      }
+    }
+
+    // ===== Data watermark =====
+    const curTime = timeRef.current;
+    const curDate = dateRef.current;
+    const curDay = dayRef.current;
+    const curAddress = addressRef.current;
+    const curPosition = positionRef.current;
+
+    // ukuran proporsional (pakai helper biar sinkron sama capture)
+    const base = Math.min(cw, ch);
+    const {
+      padOuter,
+      gap,
+      logoSize,
+      timeFont,
+      metaFont,
+      addrFont,
+      barW,
+      addrLineGap,
+    } = getFontSizes(base);
+    const lineGap = addrLineGap(addrFont);
+
+    // hitung lebar teks
+    ctx.font = `800 ${timeFont}px sans-serif`;
+    const timeW = ctx.measureText(curTime).width;
+
+    ctx.font = `600 ${metaFont}px sans-serif`;
+    const rightColW = Math.max(
+      ctx.measureText(curDate).width,
+      ctx.measureText(curDay).width
+    );
+
+    const topRowW = timeW + gap + barW + gap + rightColW;
+    const topRowH = timeFont;
+
+    ctx.font = `400 ${addrFont}px sans-serif`;
+    const addrLines = wrapLines(ctx, curAddress, Math.max(topRowW, logoSize));
+    const addrH =
+      addrLines.length * addrFont + (addrLines.length - 1) * lineGap;
+
+    const blockW = Math.max(logoSize, topRowW);
+    const blockH = logoSize + gap + topRowH + gap + addrH;
+
+    // posisi corner
+    let x = padOuter,
+      y = padOuter;
+    if (curPosition === "top-right") {
+      x = cw - padOuter - blockW;
+    } else if (curPosition === "bottom-left") {
+      y = ch - padOuter - blockH;
+    } else if (curPosition === "bottom-right") {
+      x = cw - padOuter - blockW;
+      y = ch - padOuter - blockH;
+    }
+
+    // ===== Section 1: logo =====
+    const logoImg = logoImgRef.current;
+    if (logoImg) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(x + logoSize / 2, y + logoSize / 2, logoSize / 2, 0, Math.PI * 2);
+      ctx.clip();
+      const s = Math.min(
+        logoSize / logoImg.naturalWidth,
+        logoSize / logoImg.naturalHeight
+      );
+      const dW = Math.floor(logoImg.naturalWidth * s);
+      const dH = Math.floor(logoImg.naturalHeight * s);
+      ctx.drawImage(
+        logoImg,
+        x + (logoSize - dW) / 2,
+        y + (logoSize - dH) / 2,
+        dW,
+        dH
+      );
+      ctx.restore();
+    }
+    // setelah gambar logo
+    y += logoSize;
+
+    // padding tambahan di bawah logo
+    const logoBottomPad = gap * 2; // misal 2x gap standar
+    y += logoBottomPad;
+
+    // ===== Section 2: jam + tanggal/hari =====
+    ctx.fillStyle = "#fff";
+    ctx.textBaseline = "top";
+
+    ctx.font = `800 ${timeFont}px sans-serif`;
+    ctx.fillText(curTime, x, y);
+    const barX = x + timeW + gap;
+    ctx.fillStyle = "#F5B700";
+    ctx.fillRect(barX, y, barW, topRowH);
+
+    ctx.fillStyle = "#fff";
+    ctx.font = `600 ${metaFont}px sans-serif`;
+    ctx.fillText(curDate, barX + barW + gap, y);
+    ctx.fillText(curDay, barX + barW + gap, y + metaFont + 4);
+
+    y += topRowH + gap;
+
+    // ===== Section 3: alamat =====
+    ctx.font = `400 ${addrFont}px sans-serif`;
+    ctx.fillStyle = "#fff";
+    addrLines.forEach((line, i) => {
+      ctx.fillText(line, x, y + i * (addrFont + lineGap));
+    });
+  }
+
+  // === Capture ===
+  function capture() {
+    let srcEl: HTMLVideoElement | HTMLImageElement | null = null;
+    let sW = 0,
+      sH = 0;
+
+    if (mode === "camera" && videoRef.current) {
+      const v = videoRef.current;
+      if (v.readyState >= 2 && v.videoWidth && v.videoHeight) {
+        srcEl = v;
+        sW = v.videoWidth;
+        sH = v.videoHeight;
+      }
+    } else if (mode === "gallery" && imgRef.current) {
+      const im = imgRef.current;
+      if (im.complete && im.naturalWidth && im.naturalHeight) {
+        srcEl = im;
+        sW = im.naturalWidth;
+        sH = im.naturalHeight;
+      }
+    }
+    if (!srcEl || !sW || !sH) return;
+
+    // ⬇️ Tetap 3:4 (HD) — silakan ubah 3000x4000 kalau mau lebih besar/kecil
+    const targetW = 3000;
+    const targetH = 4000;
+
+    const off = document.createElement("canvas");
+    off.width = targetW;
+    off.height = targetH;
+    const ctx = off.getContext("2d");
+    if (!ctx) return;
+
+    // HD rendering
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+
+    // Background (object-cover)
+    const { dw, dh, dx, dy } = coverRect(sW, sH, targetW, targetH);
+    if (mode === "camera" && facing === "user") {
+      ctx.save();
+      ctx.translate(targetW, 0);
+      ctx.scale(-1, 1);
+      ctx.drawImage(srcEl, dx, dy, dw, dh);
+      ctx.restore();
+    } else {
+      ctx.drawImage(srcEl, dx, dy, dw, dh);
+    }
+
+    // ✅ Render watermark pakai fungsi yang sama dengan preview
+    renderWatermark(ctx, targetW, targetH, {
+      curTime: timeRef.current,
+      curDate: dateRef.current,
+      curDay: dayRef.current,
+      curAddress: addressRef.current,
+      curPosition: positionRef.current,
+      logoImg: logoImgRef.current,
+    });
+
+    // Export JPEG
+    const dataUrl = off.toDataURL("image/jpeg", 0.95);
+    const a = document.createElement("a");
+    a.href = dataUrl;
+    a.download = `${Date.now()}.jpg`;
+    a.click();
+  }
+
+  // ================= RENDER =================
+  return (
+    <div className="min-h-screen bg-gray-50">
+      <header className="sticky top-0 z-40 border-b bg-white/80 backdrop-blur">
+        <div className="mx-auto max-w-6xl px-4 py-3 flex items-center justify-between">
+          <h1 className="text-xl font-semibold">Timemark</h1>
+          <div className="flex gap-2">
+            <button
+              onClick={() => {
+                setMode("camera");
+                switchToCamera();
+              }}
+              className={`px-3 py-1.5 rounded-xl text-sm font-medium border ${
+                mode === "camera" ? "bg-gray-900 text-white" : "bg-white"
+              }`}
+            >
+              Kamera
+            </button>
+            <button
+              onClick={switchToGallery}
+              className={`px-3 py-1.5 rounded-xl text-sm font-medium border ${
+                mode === "gallery" ? "bg-gray-900 text-white" : "bg-white"
+              }`}
+            >
+              Import
+            </button>
+            <div className="flex items-center gap-2">
+              <span className="text-sm">Depan</span>
+              <button
+                type="button"
+                onClick={() =>
+                  setFacing((prev) =>
+                    prev === "user" ? "environment" : "user"
+                  )
+                }
+                className="relative inline-flex h-6 w-11 items-center rounded-full border"
+                aria-label="Toggle Kamera Depan/Belakang"
+                title="Toggle Kamera Depan/Belakang"
+              >
+                <span
+                  className={`inline-block h-5 w-5 transform rounded-full bg-gray-900 transition ${
+                    facing === "environment" ? "translate-x-5" : "translate-x-1"
+                  }`}
+                />
+              </button>
+              <span className="text-sm">Belakang</span>
+            </div>
+          </div>
         </div>
+      </header>
+
+      <main className="mx-auto max-w-6xl px-4 py-6 grid lg:grid-cols-2 gap-6">
+        {/* Preview Panel */}
+        <section className="bg-white border rounded-2xl p-4 relative overflow-hidden">
+          <div
+            ref={previewBoxRef}
+            className="aspect-[3/4] w-full bg-black/5 rounded-xl relative overflow-hidden"
+          >
+            <video
+              ref={videoRef}
+              className="hidden"
+              autoPlay
+              playsInline
+              muted
+            />
+            {/* <img ref={imgRef} className="hidden" alt="source" /> */}
+            <Image
+              ref={imgRef}
+              src={imgRef.current?.src || defaultImage.src}
+              alt="source"
+              width={1}
+              height={1}
+              className="hidden"
+            />
+
+            <canvas
+              ref={canvasRef}
+              className="absolute inset-0 w-full h-full"
+            />
+          </div>
+
+          <div className="mt-4 flex items-center justify-between gap-3">
+            <div className="flex gap-2">
+              {mode === "camera" && (
+                <button
+                  onClick={isCamActive ? stopCamera : startCamera}
+                  className="px-3 py-2 rounded-xl border bg-white font-medium"
+                >
+                  {isCamActive ? "Matikan Kamera" : "Nyalakan Kamera"}
+                </button>
+              )}
+              {mode === "gallery" && (
+                <label className="px-3 py-2 rounded-xl border bg-white font-medium cursor-pointer">
+                  Pilih Gambar
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={onPickImage}
+                  />
+                </label>
+              )}
+              <button
+                onClick={capture}
+                className="px-3 py-2 rounded-xl bg-gray-900 text-white font-semibold"
+              >
+                Ambil Foto
+              </button>
+            </div>
+          </div>
+          {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+        </section>
+
+        {/* Controls */}
+        <section className="bg-white border rounded-2xl p-4 space-y-6">
+          <div>
+            <h2 className="text-xl font-semibold mb-3">METADATA WATERMARK</h2>
+            <div className="grid sm:grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-sm font-medium">Logo</label>
+                <div className="relative">
+                  <Image
+                    src={logoFile ? URL.createObjectURL(logoFile) : defaultLogo}
+                    alt="logo"
+                    width={32}
+                    height={32}
+                    className="rounded-full"
+                  />
+                  <span className="text-gray-500 text-sm">Pilih Logo</span>
+                  <label className="absolute inset-0 w-full h-full flex items-center justify-center opacity-0 cursor-pointer">
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={(e) => setLogoFile(e.target.files?.[0] ?? null)}
+                      className="absolute inset-0 w-full h-full opacity-0"
+                    />
+                  </label>
+                </div>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-sm font-medium">Jam</label>
+                <input
+                  type="time"
+                  className="border rounded-xl px-3 py-2"
+                  placeholder="HH:MM"
+                  value={timeText}
+                  onChange={(e) => setTimeText(e.target.value)}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-sm font-medium">Tanggal</label>
+                <input
+                  type="date"
+                  className="border rounded-xl px-3 py-2"
+                  placeholder="DD/MM/YYYY"
+                  // value={dateText}
+                  // onChange={(e) => setDateText(e.target.value)}
+                  value={
+                    new Date(dateText).toString() === "Invalid Date"
+                      ? ""
+                      : new Intl.DateTimeFormat("id-ID", {
+                          year: "numeric",
+                          month: "2-digit",
+                          day: "2-digit",
+                        }).format(new Date(dateText))
+                  }
+                  onChange={(e) =>
+                    setDateText(
+                      new Intl.DateTimeFormat("id-ID", {
+                        year: "numeric",
+                        month: "2-digit",
+                        day: "2-digit",
+                      }).format(new Date(e.target.value))
+                    )
+                  }
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-sm font-medium">Hari</label>
+                <select
+                  className="border rounded-xl px-3 py-2"
+                  value={dayText}
+                  onChange={(e) => setDayText(e.target.value)}
+                >
+                  <option value="">Pilih Hari</option>
+                  <option value="Senin">Senin</option>
+                  <option value="Selasa">Selasa</option>
+                  <option value="Rabu">Rabu</option>
+                  <option value="Kamis">Kamis</option>
+                  <option value="Jumat">Jumat</option>
+                  <option value="Sabtu">Sabtu</option>
+                  <option value="Minggu">Minggu</option>
+                </select>
+              </div>
+              <div className="flex flex-col gap-1.5 sm:col-span-2">
+                <label className="text-sm font-medium">Alamat</label>
+                <input
+                  className="border rounded-xl px-3 py-2"
+                  placeholder="Alamat…"
+                  value={address}
+                  onChange={(e) => setAddress(e.target.value)}
+                />
+                <div className="flex gap-2 mt-2 flex-wrap">
+                  <button
+                    onClick={useMyLocation}
+                    className="px-3 py-2 rounded-xl border bg-white text-xs"
+                  >
+                    Gunakan Lokasi Saya
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Search */}
+          <div>
+            <h2 className="text-sm font-semibold mb-2">Cari Alamat</h2>
+            <div className="flex gap-2">
+              <input
+                className="border rounded-xl px-3 py-2 w-full"
+                placeholder="Cari alamat/lokasi…"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
+              <button
+                onClick={searchAddress}
+                className="px-3 py-2 rounded-xl border bg-white"
+              >
+                Cari
+              </button>
+            </div>
+            {searching && (
+              <p className="text-sm text-gray-500 mt-2">Mencari…</p>
+            )}
+            {searchResults.length > 0 && (
+              <ul className="mt-2 max-h-48 overflow-auto border rounded-xl divide-y">
+                {searchResults.map((r, i) => (
+                  <li
+                    key={`${r.display_name}-${i}`}
+                    className="p-2 text-sm hover:bg-gray-50 cursor-pointer"
+                    onClick={() => applyResult(r.display_name)}
+                  >
+                    {r.display_name}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          {/* Posisi */}
+          <div>
+            <h2 className="text-sm font-semibold mb-2">Posisi</h2>
+            <div className="grid grid-cols-2 gap-2 max-w-xs">
+              {(
+                [
+                  "top-left",
+                  "top-right",
+                  "bottom-left",
+                  "bottom-right",
+                ] as Corner[]
+              ).map((p) => (
+                <button
+                  key={p}
+                  onClick={() => setPosition(p)}
+                  className={`px-3 py-2 rounded-xl border ${
+                    position === p ? "bg-gray-900 text-white" : "bg-white"
+                  }`}
+                >
+                  {p === "top-left" && "Kiri Atas"}
+                  {p === "top-right" && "Kanan Atas"}
+                  {p === "bottom-left" && "Kiri Bawah"}
+                  {p === "bottom-right" && "Kanan Bawah"}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="text-sm text-gray-600 border-t pt-3">
+            <p>
+              Gunakan dengan bijak. Jangan manyalahgunakan untuk hal negatif,
+              segala jenis penyalahgunaan bukan tanggung jawab pembuat aplikasi
+              ini.
+            </p>
+          </div>
+        </section>
       </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+
+      {/* Hidden sources */}
+      <input type="file" accept="image/*" className="hidden" />
     </div>
   );
 }
