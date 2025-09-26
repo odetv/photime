@@ -4,7 +4,6 @@
 "use client";
 import React, { useEffect, useRef, useState } from "react";
 import defaultLogo from "../../public/default_logo.png";
-import defaultImage from "../../public/default_image.png";
 import Image from "next/image";
 
 type Corner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
@@ -61,7 +60,7 @@ function getFontSizes(base: number) {
     logoSize: Math.max(base * 0.15, 85),
     timeFont: Math.max(base * 0.1, 50),
     metaFont: Math.max(base * 0.04, 16),
-    addrFont: Math.max(base * 0.03, 12), // alamat lebih kecil
+    addrFont: Math.max(base * 0.03, 12),
     barW: Math.max(base * 0.01, 6),
     addrLineGap(addrFont: number) {
       return Math.floor(addrFont * 0.2);
@@ -88,7 +87,7 @@ function getAvgBrightness(
     const count = imgData.data.length / step;
     return total / count;
   } catch {
-    return 255; // fallback terang
+    return 255;
   }
 }
 
@@ -98,6 +97,7 @@ export default function TimestampWatermarkPage() {
   const [mode, setMode] = useState<SourceMode>("camera");
   const [isCamActive, setIsCamActive] = useState(false);
   const [position, setPosition] = useState<Corner>("bottom-left");
+  const [dateISO, setDateISO] = useState("");
   const [timeText, setTimeText] = useState("");
   const [dateText, setDateText] = useState("");
   const [dayText, setDayText] = useState("");
@@ -108,7 +108,6 @@ export default function TimestampWatermarkPage() {
   const [searchResults, setSearchResults] = useState<OSMSearchItem[]>([]);
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Refs
   const previewBoxRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -116,7 +115,6 @@ export default function TimestampWatermarkPage() {
   const streamRef = useRef<MediaStream | null>(null);
   const rafRef = useRef<number | null>(null);
   const logoImgRef = useRef<HTMLImageElement | null>(null);
-  // latest refs
   const timeRef = useLatest(timeText);
   const dateRef = useLatest(dateText);
   const dayRef = useLatest(dayText);
@@ -124,43 +122,47 @@ export default function TimestampWatermarkPage() {
   const positionRef = useLatest(position);
   const getDPR = () => Math.max(1, window.devicePixelRatio || 1);
 
-  // init
   useEffect(() => {
     const now = new Date();
-    setTimeText(
-      now.toLocaleTimeString("id-ID", {
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: false,
-      })
-    );
-    // format contoh: 26/09/2025
+
+    // ⏰ Waktu default harus "HH:MM"
+    const hh = String(now.getHours()).padStart(2, "0");
+    const mm = String(now.getMinutes()).padStart(2, "0");
+    setTimeText(`${hh}:${mm}`);
+
+    const iso = now.toISOString().slice(0, 10); // YYYY-MM-DD
+    setDateISO(iso);
+
     setDateText(
-      now
-        .toLocaleDateString("id-ID", {
-          day: "2-digit",
-          month: "2-digit",
-          year: "numeric",
-        })
-        .replace(/\./g, "/")
+      new Intl.DateTimeFormat("id-ID", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+      }).format(now)
     );
-    setDayText(now.toLocaleDateString("id-ID", { weekday: "long" }));
+
+    setDayText(
+      new Intl.DateTimeFormat("id-ID", { weekday: "long" }).format(now)
+    );
+
     startCamera();
     return () => stopCamera();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
   useEffect(() => {
     if (mode === "camera") {
       stopCamera();
       void startCamera();
     }
-  }, [facing]); // eslint-disable-line
+  }, [facing]);
+
   useEffect(() => {
     if (!logoFile) return;
     const url = URL.createObjectURL(logoFile);
     setLogoUrl(url);
     return () => URL.revokeObjectURL(url);
   }, [logoFile]);
+
   useEffect(() => {
     if (!logoUrl) {
       logoImgRef.current = null;
@@ -212,6 +214,7 @@ export default function TimestampWatermarkPage() {
       setIsCamActive(false);
     }
   }
+
   function stopCamera() {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
@@ -219,14 +222,17 @@ export default function TimestampWatermarkPage() {
     }
     setIsCamActive(false);
   }
+
   function switchToGallery() {
     setMode("gallery");
     stopCamera();
   }
+
   function switchToCamera() {
     setMode("camera");
     startCamera();
   }
+
   function onPickImage(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
     if (!f) return;
@@ -238,7 +244,6 @@ export default function TimestampWatermarkPage() {
     stopCamera();
   }
 
-  // OSM
   async function useMyLocation() {
     try {
       setError(null);
@@ -264,6 +269,7 @@ export default function TimestampWatermarkPage() {
       setSearching(false);
     }
   }
+
   async function searchAddress() {
     if (!searchQuery.trim()) return;
     try {
@@ -282,12 +288,12 @@ export default function TimestampWatermarkPage() {
       setSearching(false);
     }
   }
+
   function applyResult(name: string) {
     setAddress(name);
     setSearchResults([]);
   }
 
-  // canvas
   function resizeCanvas(cssW: number, cssH: number) {
     const c = canvasRef.current!;
     c.style.width = `${cssW}px`;
@@ -300,6 +306,7 @@ export default function TimestampWatermarkPage() {
       c.height = pxH;
     }
   }
+
   function startRAFLoop() {
     stopRAFLoop();
     const loop = () => {
@@ -308,11 +315,13 @@ export default function TimestampWatermarkPage() {
     };
     rafRef.current = requestAnimationFrame(loop);
   }
+
   function stopRAFLoop() {
     if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
     rafRef.current = null;
   }
 
+  // Fungsi render watermark untuk capture
   function renderWatermark(
     ctx: CanvasRenderingContext2D,
     cw: number,
@@ -327,7 +336,6 @@ export default function TimestampWatermarkPage() {
     }
   ) {
     const { curTime, curDate, curDay, curAddress, curPosition, logoImg } = opts;
-
     ctx.textBaseline = "top";
 
     const base = Math.min(cw, ch);
@@ -400,6 +408,7 @@ export default function TimestampWatermarkPage() {
       );
       ctx.restore();
     }
+
     // setelah gambar logo
     y += logoSize;
 
@@ -429,6 +438,7 @@ export default function TimestampWatermarkPage() {
     });
   }
 
+  // Fungsi draw untuk preview kamera dengan watermark
   function draw() {
     const c = canvasRef.current;
     if (!c) return;
@@ -546,6 +556,7 @@ export default function TimestampWatermarkPage() {
       );
       ctx.restore();
     }
+
     // Hitung brightness background area watermark
     const avgBrightness = getAvgBrightness(ctx, x, y, blockW, blockH);
     const textColor = avgBrightness < 128 ? "#fff" : "#000";
@@ -655,10 +666,10 @@ export default function TimestampWatermarkPage() {
 
   // ================= RENDER =================
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="sticky top-0 z-40 border-b bg-white/80 backdrop-blur">
+    <div className="min-h-screen bg-blue-50">
+      <header className="sticky top-0 z-40 bg-white backdrop-blur shadow-sm">
         <div className="mx-auto max-w-6xl px-4 py-3 flex items-center justify-between">
-          <h1 className="text-xl font-semibold">Timemark</h1>
+          <h1 className="text-2xl font-bold">Photime</h1>
           <div className="flex gap-2">
             <button
               onClick={() => {
@@ -669,7 +680,7 @@ export default function TimestampWatermarkPage() {
                 mode === "camera" ? "bg-gray-900 text-white" : "bg-white"
               }`}
             >
-              Kamera
+              Mode Kamera
             </button>
             <button
               onClick={switchToGallery}
@@ -677,36 +688,15 @@ export default function TimestampWatermarkPage() {
                 mode === "gallery" ? "bg-gray-900 text-white" : "bg-white"
               }`}
             >
-              Import
+              Unggah
             </button>
-            <div className="flex items-center gap-2">
-              <span className="text-sm">Depan</span>
-              <button
-                type="button"
-                onClick={() =>
-                  setFacing((prev) =>
-                    prev === "user" ? "environment" : "user"
-                  )
-                }
-                className="relative inline-flex h-6 w-11 items-center rounded-full border"
-                aria-label="Toggle Kamera Depan/Belakang"
-                title="Toggle Kamera Depan/Belakang"
-              >
-                <span
-                  className={`inline-block h-5 w-5 transform rounded-full bg-gray-900 transition ${
-                    facing === "environment" ? "translate-x-5" : "translate-x-1"
-                  }`}
-                />
-              </button>
-              <span className="text-sm">Belakang</span>
-            </div>
           </div>
         </div>
       </header>
 
       <main className="mx-auto max-w-6xl px-4 py-6 grid lg:grid-cols-2 gap-6">
         {/* Preview Panel */}
-        <section className="bg-white border rounded-2xl p-4 relative overflow-hidden">
+        <section className="bg-white rounded-2xl p-4 relative overflow-hidden">
           <div
             ref={previewBoxRef}
             className="aspect-[3/4] w-full bg-black/5 rounded-xl relative overflow-hidden"
@@ -719,14 +709,6 @@ export default function TimestampWatermarkPage() {
               muted
             />
             <img ref={imgRef} className="hidden" alt="source" />
-            {/* <Image
-              ref={imgRef}
-              src={imgRef.current?.src || defaultImage.src}
-              alt="source"
-              width={1}
-              height={1}
-              className="hidden"
-            /> */}
 
             <canvas
               ref={canvasRef}
@@ -734,7 +716,7 @@ export default function TimestampWatermarkPage() {
             />
           </div>
 
-          <div className="mt-4 flex items-center justify-between gap-3">
+          <div className="mt-4 flex items-center justify-center gap-3">
             <div className="flex gap-2">
               {mode === "camera" && (
                 <button
@@ -759,121 +741,109 @@ export default function TimestampWatermarkPage() {
                 onClick={capture}
                 className="px-3 py-2 rounded-xl bg-gray-900 text-white font-semibold"
               >
-                Ambil Foto
+                Tangkap
               </button>
+              <div className="flex items-center gap-2 px-3 py-2 rounded-xl border bg-white font-medium">
+                <p>Kamera F/R</p>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setFacing((prev) =>
+                      prev === "user" ? "environment" : "user"
+                    )
+                  }
+                  className="relative inline-flex h-6 w-11 items-center rounded-full border"
+                  aria-label="Toggle Kamera Depan/Belakang"
+                  title="Toggle Kamera Depan/Belakang"
+                >
+                  <span
+                    className={`inline-block h-5 w-5 transform rounded-full bg-gray-900 transition ${
+                      facing === "environment"
+                        ? "translate-x-5"
+                        : "translate-x-1"
+                    }`}
+                  />
+                </button>
+              </div>
             </div>
           </div>
           {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
         </section>
 
         {/* Controls */}
-        <section className="bg-white border rounded-2xl p-4 space-y-6">
+        <section className="bg-white rounded-2xl p-4 space-y-6">
           <div>
-            <h2 className="text-xl font-semibold mb-3">METADATA WATERMARK</h2>
-            <div className="grid sm:grid-cols-2 gap-3">
-              <div className="flex flex-col gap-1.5">
-                <label className="text-sm font-medium">Logo</label>
-                <div className="relative">
-                  <Image
-                    src={logoFile ? URL.createObjectURL(logoFile) : defaultLogo}
-                    alt="logo"
-                    width={32}
-                    height={32}
-                    className="rounded-full"
+            <h1 className="text-xl font-bold mb-6 text-center">
+              Metadata Watermark
+            </h1>
+            <div className="flex flex-col gap-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-sm font-medium">Waktu</label>
+                  <input
+                    type="time"
+                    className="border rounded-xl px-3 py-2"
+                    placeholder="HH:MM"
+                    value={timeText}
+                    onChange={(e) => setTimeText(e.target.value)}
                   />
-                  <span className="text-gray-500 text-sm">Pilih Logo</span>
-                  <label className="absolute inset-0 w-full h-full flex items-center justify-center opacity-0 cursor-pointer">
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(e) => setLogoFile(e.target.files?.[0] ?? null)}
-                      className="absolute inset-0 w-full h-full opacity-0"
-                    />
-                  </label>
                 </div>
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <label className="text-sm font-medium">Jam</label>
-                <input
-                  type="time"
-                  className="border rounded-xl px-3 py-2"
-                  placeholder="HH:MM"
-                  value={timeText}
-                  onChange={(e) => setTimeText(e.target.value)}
-                />
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <label className="text-sm font-medium">Tanggal</label>
-                <input
-                  type="date"
-                  className="border rounded-xl px-3 py-2"
-                  placeholder="DD/MM/YYYY"
-                  // value={dateText}
-                  // onChange={(e) => setDateText(e.target.value)}
-                  value={
-                    new Date(dateText).toString() === "Invalid Date"
-                      ? ""
-                      : new Intl.DateTimeFormat("id-ID", {
-                          year: "numeric",
-                          month: "2-digit",
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-sm font-medium">Tanggal</label>
+                  <input
+                    type="date"
+                    className="border rounded-xl px-3 py-2"
+                    value={dateISO}
+                    onChange={(e) => {
+                      const iso = e.target.value; // YYYY-MM-DD
+                      setDateISO(iso);
+                      const d = new Date(iso + "T00:00:00");
+                      setDateText(
+                        new Intl.DateTimeFormat("id-ID", {
                           day: "2-digit",
-                        }).format(new Date(dateText))
-                  }
-                  onChange={(e) =>
-                    setDateText(
-                      new Intl.DateTimeFormat("id-ID", {
-                        year: "numeric",
-                        month: "2-digit",
-                        day: "2-digit",
-                      }).format(new Date(e.target.value))
-                    )
-                  }
-                />
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <label className="text-sm font-medium">Hari</label>
-                <select
-                  className="border rounded-xl px-3 py-2"
-                  value={dayText}
-                  onChange={(e) => setDayText(e.target.value)}
-                >
-                  <option value="">Pilih Hari</option>
-                  <option value="Senin">Senin</option>
-                  <option value="Selasa">Selasa</option>
-                  <option value="Rabu">Rabu</option>
-                  <option value="Kamis">Kamis</option>
-                  <option value="Jumat">Jumat</option>
-                  <option value="Sabtu">Sabtu</option>
-                  <option value="Minggu">Minggu</option>
-                </select>
+                          month: "2-digit",
+                          year: "numeric",
+                        }).format(d)
+                      );
+
+                      // set hari otomatis
+                      setDayText(
+                        new Intl.DateTimeFormat("id-ID", {
+                          weekday: "long",
+                        }).format(d)
+                      );
+                    }}
+                  />
+                  {/* Opsional: tampilkan hari hanya sebagai teks (read-only) */}
+                  <p className="text-xs text-gray-600 mt-1"></p>
+                </div>
               </div>
               <div className="flex flex-col gap-1.5 sm:col-span-2">
                 <label className="text-sm font-medium">Alamat</label>
-                <input
-                  className="border rounded-xl px-3 py-2"
-                  placeholder="Alamat…"
-                  value={address}
-                  onChange={(e) => setAddress(e.target.value)}
-                />
-                <div className="flex gap-2 mt-2 flex-wrap">
+                <div className="flex gap-2">
+                  <input
+                    className="border rounded-xl px-3 py-2 w-full"
+                    placeholder="Alamat…"
+                    value={address}
+                    onChange={(e) => setAddress(e.target.value)}
+                  />
+
                   <button
                     onClick={useMyLocation}
-                    className="px-3 py-2 rounded-xl border bg-white text-xs"
+                    className="px-3 py-2 rounded-xl border bg-white"
                   >
-                    Gunakan Lokasi Saya
+                    Lokasiku
                   </button>
                 </div>
               </div>
             </div>
           </div>
-
-          {/* Search */}
           <div>
-            <h2 className="text-sm font-semibold mb-2">Cari Alamat</h2>
+            <h2 className="text-sm font-semibold mb-2">Tentukan Alamat</h2>
             <div className="flex gap-2">
               <input
                 className="border rounded-xl px-3 py-2 w-full"
-                placeholder="Cari alamat/lokasi…"
+                placeholder="Cari alamat"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
               />
@@ -901,11 +871,9 @@ export default function TimestampWatermarkPage() {
               </ul>
             )}
           </div>
-
-          {/* Posisi */}
           <div>
             <h2 className="text-sm font-semibold mb-2">Posisi</h2>
-            <div className="grid grid-cols-2 gap-2 max-w-xs">
+            <div className="grid grid-cols-4 gap-2 max-w-xs">
               {(
                 [
                   "top-left",
@@ -921,17 +889,40 @@ export default function TimestampWatermarkPage() {
                     position === p ? "bg-gray-900 text-white" : "bg-white"
                   }`}
                 >
-                  {p === "top-left" && "Kiri Atas"}
-                  {p === "top-right" && "Kanan Atas"}
-                  {p === "bottom-left" && "Kiri Bawah"}
-                  {p === "bottom-right" && "Kanan Bawah"}
+                  {p === "top-left" && "TL"}
+                  {p === "top-right" && "TR"}
+                  {p === "bottom-left" && "BL"}
+                  {p === "bottom-right" && "BR"}
                 </button>
               ))}
             </div>
           </div>
 
+          <div className="flex flex-col gap-1.5">
+            <label className="text-sm font-medium">Logo</label>
+            <div className="relative">
+              <Image
+                src={logoFile ? URL.createObjectURL(logoFile) : defaultLogo}
+                alt="logo"
+                width={64}
+                height={64}
+                className="rounded-full p-2"
+              />
+              <span className="text-gray-500 text-sm">Pilih Logo</span>
+              <label className="absolute inset-0 w-full h-full flex items-center justify-center opacity-0 cursor-pointer">
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => setLogoFile(e.target.files?.[0] ?? null)}
+                  className="absolute inset-0 w-full h-full opacity-0"
+                />
+              </label>
+            </div>
+          </div>
+
           <div className="text-sm text-gray-600 border-t pt-3">
-            <p>
+            <p className="font-semibold">Penting ⚠️</p>
+            <p className="">
               Gunakan dengan bijak. Jangan manyalahgunakan untuk hal negatif,
               segala jenis penyalahgunaan bukan tanggung jawab pembuat aplikasi
               ini.
@@ -939,9 +930,6 @@ export default function TimestampWatermarkPage() {
           </div>
         </section>
       </main>
-
-      {/* Hidden sources */}
-      <input type="file" accept="image/*" className="hidden" />
     </div>
   );
 }
