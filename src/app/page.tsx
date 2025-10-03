@@ -5,6 +5,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import defaultLogo from "../../public/default_logo.png";
 import Image from "next/image";
+import * as piexif from "piexifjs";
 
 type Corner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 type SourceMode = "camera" | "gallery";
@@ -90,6 +91,99 @@ function getAvgBrightness(
     return 255;
   }
 }
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
+}
+
+// Buat "YYYY:MM:DD HH:MM:SS" untuk EXIF dan "YYYY-MM-DD HH.MM.SS" untuk nama file
+function buildDateTime(dateISO: string, timeHHMM: string) {
+  const [hh, mm] = timeHHMM.split(":").map(Number);
+  const base = new Date(dateISO + "T00:00:00");
+  // pakai detik aktual saat capture agar ada SS
+  const now = new Date();
+  base.setHours(hh || 0, mm || 0, now.getSeconds(), 0);
+
+  const Y = base.getFullYear();
+  const M = pad2(base.getMonth() + 1);
+  const D = pad2(base.getDate());
+  const H = pad2(base.getHours());
+  const I = pad2(base.getMinutes());
+  const S = pad2(base.getSeconds());
+
+  const exifDT = `${Y}:${M}:${D} ${H}:${I}:${S}`; // EXIF DateTime
+  const fileDT = `${Y}-${M}-${D} ${H}.${I}.${S}`; // Nama file
+  return { exifDT, fileDT, full: base };
+}
+
+// Ambil potongan alamat sebelum koma pertama
+function firstSegmentAddress(fullAddress: string) {
+  const seg = fullAddress.split(",")[0]?.trim() || "";
+  // sanitasi untuk nama file
+  return seg.replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, " ");
+}
+
+// Konversi derajat ke DMS (untuk EXIF GPS)
+function toDMS(deg: number) {
+  const d = Math.floor(Math.abs(deg));
+  const minFloat = (Math.abs(deg) - d) * 60;
+  const m = Math.floor(minFloat);
+  const s = (minFloat - m) * 60;
+  // EXIF pakai rasio [num, den]
+  return [
+    [d, 1],
+    [m, 1],
+    [Math.round(s * 100), 100], // presisi 2 desimal
+  ];
+}
+
+// Bangun objek EXIF dan selipkan ke JPEG dataURL
+function injectExifToJpegDataUrl(
+  dataUrlJpeg: string,
+  exifDateTime: string,
+  addressStr: string,
+  lat: number | null,
+  lon: number | null
+) {
+  const zeroth: any = {};
+  const exif: any = {};
+  const gps: any = {};
+
+  // Tanggal/waktu
+  zeroth[piexif.ImageIFD.DateTime] = exifDateTime;
+  exif[piexif.ExifIFD.DateTimeOriginal] = exifDateTime;
+  exif[piexif.ExifIFD.DateTimeDigitized] = exifDateTime; // <- penting
+
+  // Alamat simpan ke ImageDescription + UserComment
+  zeroth[piexif.ImageIFD.ImageDescription] = addressStr;
+  exif[piexif.ExifIFD.UserComment] = "ASCII\0\0\0" + addressStr;
+
+  // GPS (opsional)
+  if (lat != null && lon != null && !Number.isNaN(lat) && !Number.isNaN(lon)) {
+    gps[piexif.GPSIFD.GPSLatitudeRef] = lat >= 0 ? "N" : "S";
+    gps[piexif.GPSIFD.GPSLatitude] = toDMS(lat);
+    gps[piexif.GPSIFD.GPSLongitudeRef] = lon >= 0 ? "E" : "W";
+    gps[piexif.GPSIFD.GPSLongitude] = toDMS(lon);
+  }
+
+  const exifObj = {
+    "0th": zeroth,
+    Exif: exif,
+    GPS: gps,
+    "1st": {},
+    thumbnail: null,
+  };
+
+  const exifBytes = piexif.dump(exifObj);
+  const withExif = piexif.insert(exifBytes, dataUrlJpeg);
+  return withExif;
+}
+
+// Bangun nama file akhir
+function buildFilename(dateISO: string, timeText: string, address: string) {
+  const { fileDT } = buildDateTime(dateISO, timeText); // YYYY-MM-DD HH.MM.SS
+  const firstAddr = firstSegmentAddress(address); // sebelum koma pertama
+  return `${fileDT}_${firstAddr}.jpg`;
+}
 
 // ===== Component =====
 export default function TimestampWatermarkPage() {
@@ -121,6 +215,8 @@ export default function TimestampWatermarkPage() {
   const addressRef = useLatest(address);
   const positionRef = useLatest(position);
   const getDPR = () => Math.max(1, window.devicePixelRatio || 1);
+  const [lat, setLat] = useState<number | null>(null);
+  const [lon, setLon] = useState<number | null>(null);
 
   useEffect(() => {
     const now = new Date();
@@ -255,6 +351,9 @@ export default function TimestampWatermarkPage() {
         });
       });
       const { latitude, longitude } = pos.coords;
+      setLat(latitude);
+      setLon(longitude);
+
       const res = await fetch(
         `https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}`,
         { headers: { "Accept-Language": "id-ID" } }
@@ -620,7 +719,7 @@ export default function TimestampWatermarkPage() {
     }
     if (!srcEl || !sW || !sH) return;
 
-    // ⬇️ Tetap 3:4 (HD) — silakan ubah 3000x4000 kalau mau lebih besar/kecil
+    // Resolusi output (3:4)
     const targetW = 3000;
     const targetH = 4000;
 
@@ -630,7 +729,6 @@ export default function TimestampWatermarkPage() {
     const ctx = off.getContext("2d");
     if (!ctx) return;
 
-    // HD rendering
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "high";
 
@@ -646,7 +744,7 @@ export default function TimestampWatermarkPage() {
       ctx.drawImage(srcEl, dx, dy, dw, dh);
     }
 
-    // ✅ Render watermark pakai fungsi yang sama dengan preview
+    // Watermark sama persis dengan preview
     renderWatermark(ctx, targetW, targetH, {
       curTime: timeRef.current,
       curDate: dateRef.current,
@@ -656,11 +754,35 @@ export default function TimestampWatermarkPage() {
       logoImg: logoImgRef.current,
     });
 
-    // Export JPEG
-    const dataUrl = off.toDataURL("image/jpeg", 0.95);
+    // === Bangun tanggal/EXIF/nama file ===
+    const { exifDT } = buildDateTime(dateISO, timeRef.current || "00:00");
+    const fileName = buildFilename(
+      dateISO,
+      timeRef.current || "00:00",
+      addressRef.current
+    );
+
+    // Export JPEG dataURL
+    const rawDataUrl = off.toDataURL("image/jpeg", 0.95);
+
+    // Sisipkan EXIF (DateTime + Alamat + GPS kalau ada)
+
+    // Download
+    let href = rawDataUrl;
+    try {
+      href = injectExifToJpegDataUrl(
+        rawDataUrl,
+        exifDT,
+        addressRef.current,
+        lat,
+        lon
+      );
+    } catch (e) {
+      console.warn("Gagal menyisipkan EXIF, download raw JPG tanpa EXIF.", e);
+    }
     const a = document.createElement("a");
-    a.href = dataUrl;
-    a.download = `${Date.now()}.jpg`;
+    a.href = href;
+    a.download = fileName;
     a.click();
   }
 
@@ -823,7 +945,7 @@ export default function TimestampWatermarkPage() {
                 <div className="flex gap-2">
                   <input
                     className="border rounded-xl px-3 py-2 w-full"
-                    placeholder="Alamat…"
+                    placeholder="Masukkan Alamat"
                     value={address}
                     onChange={(e) => setAddress(e.target.value)}
                   />
@@ -843,7 +965,7 @@ export default function TimestampWatermarkPage() {
             <div className="flex gap-2">
               <input
                 className="border rounded-xl px-3 py-2 w-full"
-                placeholder="Cari alamat"
+                placeholder="Cari Lokasi"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
               />
