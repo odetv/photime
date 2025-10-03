@@ -173,7 +173,10 @@ function injectExifToJpegDataUrl(
     thumbnail: null,
   };
 
-  const exifBytes = piexif.dump(exifObj);
+  const exifBytes = piexif.dump({
+    ...exifObj,
+    thumbnail: exifObj.thumbnail || undefined,
+  });
   const withExif = piexif.insert(exifBytes, dataUrlJpeg);
   return withExif;
 }
